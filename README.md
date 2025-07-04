@@ -1,15 +1,22 @@
 # Streamlit PDF Parser
 
-This project is a Streamlit application that allows users to upload files or folders containing PDF documents. The application processes these PDFs for parsing, extracting relevant information as specified.
+This project is a Streamlit application that allows users to upload files or folders containing PDF bank statements. The application processes these PDFs for parsing, extracting relevant information.
+! MAY NOT WORK FOR ALL BANKS YET !
 
 ## Project Structure
 
-```
+``` 
 streamlit-pdf-parser
-├── app.py
-├── script.py
+├── app.py - stages streamlit app
+├── script.py - provides logic and code for app.py
 ├── requirements.txt
 └── README.md
+
+├── colat_bk_stmt.ipynb - script.py copy for processing folders
+├── detect_desc.ipynb - bank statement description cleaning and entity detection
+├── finetune_spacy_md.ipynb - [ongoing] finetune NER for description entity detection
+├── rtwete.ipynb - testing file
+├── test.ipynb - testing file
 ```
 
 ## Installation
@@ -18,7 +25,7 @@ To set up the project, follow these steps:
 
 1. Clone the repository or download the project files.
 2. Navigate to the project directory.
-3. Create a virtual environment (optional but recommended):
+3. Create a virtual environment (recommended):
    ```
    python -m venv venv
    ```
@@ -45,30 +52,3 @@ streamlit run app.py
 ```
 
 This will start the Streamlit server and open the application in your default web browser.
-
-## Usage
-
-1. Upload a file or folder containing PDF documents.
-2. The application will check for PDF files and process them accordingly.
-3. View the parsed results directly in the application interface.
-
-## Dependencies
-
-The project requires the following Python packages:
-
-- Streamlit
-- PyMuPDF
-- pdf2image
-- pytesseract
-- pandas
-- fuzzywuzzy
-
-Make sure to install these packages using the `requirements.txt` file provided.
-
-## Contributing
-
-Contributions are welcome! If you have suggestions for improvements or features, feel free to open an issue or submit a pull request.
-
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for more details.
