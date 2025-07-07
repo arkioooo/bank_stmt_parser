@@ -5,6 +5,9 @@ import pandas as pd
 import re
 import os
 from fuzzywuzzy import fuzz
+from pdf2image import convert_from_path
+from transformers import Pix2StructForConditionalGeneration, Pix2StructProcessor
+from PIL import Image
 
 # classifications dict
 CLASSIFICATIONS = {
@@ -37,67 +40,90 @@ desc_list = ['description', 'remark', 'transaction', 'detail', 'particulars']
 def extract_account_info_from_text(text, pdf_path=None, bbox_acc_no=None, poppler_bin=None, page_num=0):
     """
     Extract account number and account holder name from PDF text content.
-    If not found, use OCR on the provided bbox to extract account number.
+    Try Pix2Struct first, then fallback to regex/OCR.
     """
     account_number = None
     account_holder = None
 
-    # regex for acc no (allowing for alphanumeric, e.g. SBIN0001234567)
-    acc_no_patterns = [
-        r'Account\s*No\.?\s*[:\-]?\s*([A-Z0-9]{6,})',
-        r'A/c\s*No\.?\s*[:\-]?\s*([A-Z0-9]{6,})',
-        r'Account\s*Number\.?\s*[:\-]?\s*([A-Z0-9]{6,})',
-        r'Acc\s*No\.?\s*[:\-]?\s*([A-Z0-9]{6,})'
-    ]
+    # pix2struct try for acc no and name
+    try:
+        poppler_bin = r"D:\\Mridul.Intern\\poppler-23.05.0\\Library\\bin"
+        model = Pix2StructForConditionalGeneration.from_pretrained("google/pix2struct-docvqa-large")
+        processor = Pix2StructProcessor.from_pretrained("google/pix2struct-docvqa-large")
 
-    for pattern in acc_no_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            account_number = match.group(1)
-            break
+        pages = convert_from_path(pdf_path, dpi=200, poppler_path=poppler_bin)
+        page = pages[0].convert("RGB")
+        width, height = page.size
+        top_half = page.crop((0, 0, width, height // 2))
 
-    # OCR fallback if not found
-    if not account_number and pdf_path and bbox_acc_no:
-        ocr_text = ocr_text_from_bbox(pdf_path, bbox_acc_no, poppler_bin, page_num)
-        # Try to extract account number from OCR text
-        for pattern in acc_no_patterns:
-            match = re.search(pattern, ocr_text, re.IGNORECASE)
-            if match:
-                account_number = match.group(1)
-                break
-        # If still not found, try to find any long alphanumeric sequence
+        prompt_holder = "Get the name of the account holder. It does not end with 'bank', 'finance' and the like. If not found, return 'Not found'."
+        inputs_holder = processor(images=top_half, text=prompt_holder, return_tensors="pt")
+        pred_holder = model.generate(**inputs_holder, max_new_tokens=64)
+        answer_holder = processor.batch_decode(pred_holder, skip_special_tokens=True)[0]
+        if answer_holder and "not found" not in answer_holder.lower():
+            account_holder = answer_holder.strip()
+
+        prompt_accno = "Get the account number which is usually a long string of integers. If not found, return 'Not found'."
+        inputs_accno = processor(images=top_half, text=prompt_accno, return_tensors="pt")
+        pred_accno = model.generate(**inputs_accno, max_new_tokens=64)
+        answer_accno = processor.batch_decode(pred_accno, skip_special_tokens=True)[0]
+        if answer_accno and "not found" not in answer_accno.lower():
+            account_number = answer_accno.strip()
+    except Exception as e:
+        print(f"Pix2Struct extraction failed: {e}")
+
+    if not account_number or not account_holder:
+        # regex for acc no (allowing for alphanumeric, e.g. SBIN0001234567)
+        acc_no_patterns = [
+            r'Account\s*No\.?\s*[:\-]?\s*([A-Z0-9]{6,})',
+            r'A/c\s*No\.?\s*[:\-]?\s*([A-Z0-9]{6,})',
+            r'Account\s*Number\.?\s*[:\-]?\s*([A-Z0-9]{6,})',
+            r'Acc\s*No\.?\s*[:\-]?\s*([A-Z0-9]{6,})'
+        ]
+
         if not account_number:
-            generic_match = re.search(r'\b[A-Z0-9]{6,}\b', ocr_text)
-            if generic_match:
-                account_number = generic_match.group(0)
+            for pattern in acc_no_patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    account_number = match.group(1)
+                    break
 
-    # Account holder extraction (same as your logic)
-    lines = text.split('\n')
-    for i, line in enumerate(lines[:30]):
-        line = line.strip()
-        if not line:
-            continue
-        lcline = line.lower()
-        # Skip lines with known non-name keywords or numbers
-        if any(skip in lcline for skip in ['statement', 'account', 'period', 'bank', 'branch', 'customer', 'number', 'date', 'summary', 'address']):
-            continue
-        if any(char.isdigit() for char in line):
-            continue
-        # Skip lines with special chars
-        if re.search(r'[^a-zA-Z\s\.]', line):
-            continue
-        # Heuristic: 2-4 words, each word capitalized or uppercase, not too long
-        words = line.split()
-        if 1 < len(words) <= 4 and all(w[0].isupper() or w.isupper() for w in words):
-            account_holder = line
-            break
+            # OCR fallback if not found
+            if not account_number and pdf_path and bbox_acc_no:
+                ocr_text = ocr_text_from_bbox(pdf_path, bbox_acc_no, poppler_bin, page_num)
+                for pattern in acc_no_patterns:
+                    match = re.search(pattern, ocr_text, re.IGNORECASE)
+                    if match:
+                        account_number = match.group(1)
+                        break
+                if not account_number:
+                    generic_match = re.search(r'\b[A-Z0-9]{6,}\b', ocr_text)
+                    if generic_match:
+                        account_number = generic_match.group(0)
 
-    # look for patterns around "Joint Holder" or similar
-    joint_holder_match = re.search(r'([A-Z\s]+)\s*Joint\s+Holder', text, re.IGNORECASE)
-    if joint_holder_match and not account_holder:
-        potential_name = joint_holder_match.group(1).strip()
-        if len(potential_name) > 3:
-            account_holder = potential_name
+        if not account_holder:
+            lines = text.split('\n')
+            for i, line in enumerate(lines[:30]):
+                line = line.strip()
+                if not line:
+                    continue
+                lcline = line.lower()
+                if any(skip in lcline for skip in ['statement', 'account', 'period', 'bank', 'branch', 'customer', 'number', 'date', 'summary', 'address']):
+                    continue
+                if any(char.isdigit() for char in line):
+                    continue
+                if re.search(r'[^a-zA-Z\s\.]', line):
+                    continue
+                words = line.split()
+                if 1 < len(words) <= 4 and all(w[0].isupper() or w.isupper() for w in words):
+                    account_holder = line
+                    break
+
+            joint_holder_match = re.search(r'([A-Z\s]+)\s*Joint\s+Holder', text, re.IGNORECASE)
+            if joint_holder_match and not account_holder:
+                potential_name = joint_holder_match.group(1).strip()
+                if len(potential_name) > 3:
+                    account_holder = potential_name
 
     return account_number, account_holder
 
@@ -219,7 +245,7 @@ def extract_tables(pdf_path, poppler_bin=None):
     doc = fitz.open(pdf_path)
     dfs = []
     
-    print(f"Processing {len(doc)} pages")
+    # print(f"Processing {len(doc)} pages")
     
     for page_num, page in enumerate(doc):
         # print(f"Processing page {page_num + 1}...")
@@ -252,13 +278,13 @@ def extract_tables(pdf_path, poppler_bin=None):
                 ocr_df = ocr_df[ocr_df.isna().sum(axis=1) <= 2]
                 if not ocr_df.empty:
                     dfs.append(ocr_df)
-                    print(f"OCR added {len(ocr_df)} rows from page {page_num + 1}")
+                    # print(f"OCR added {len(ocr_df)} rows from page {page_num + 1}")
     
     doc.close()
     
     if dfs:
         combined_df = pd.concat(dfs, ignore_index=True)
-        print(f"Total combined rows: {len(combined_df)}")
+        # print(f"Total combined rows: {len(combined_df)}")
         return combined_df
     else:
         return pd.DataFrame()
@@ -349,7 +375,7 @@ def process_statement(input_pdf, output_file, bbox_acc_no=None, bbox_acc_name=No
     Process bank statement PDF and extract structured data.
     Uses text extraction as primary method, OCR as fallback.
     """
-    print(f"Processing {input_pdf}")
+    # print(f"Processing {input_pdf}")
     
     # use fitz
     pdf_text = extract_text_from_pdf(input_pdf)
@@ -366,8 +392,8 @@ def process_statement(input_pdf, output_file, bbox_acc_no=None, bbox_acc_name=No
         # print(f"OCR results - Account No: {acc_no}, Account Holder: {acc_name}")
     
     df_raw = extract_tables(input_pdf, poppler_bin)
-    print(df_raw.tail())
-    print(f"Extracted {len(df_raw)} raw rows from tables")
+    # print(df_raw.tail())
+    # print(f"Extracted {len(df_raw)} raw rows from tables")
     
     df = normalize(df_raw)
 
@@ -381,7 +407,7 @@ def process_statement(input_pdf, output_file, bbox_acc_no=None, bbox_acc_name=No
     
     # save to Excel
     df.to_excel(output_file, index=False)
-    print(f"Saved {len(df)} processed rows to {output_file}")
+    # print(f"Saved {len(df)} processed rows to {output_file}")
     
     return df, acc_no, acc_name
 
@@ -393,12 +419,12 @@ def process_folder(input_folder, output_folder, bbox_acc_no=None, bbox_acc_name=
         os.makedirs(output_folder)
     
     pdf_files = [f for f in os.listdir(input_folder) if f.lower().endswith('.pdf')]
-    print(f"Found {len(pdf_files)} PDF files in {input_folder}")
+    # print(f"Found {len(pdf_files)} PDF files in {input_folder}")
 
     for pdf_file in pdf_files:
         input_pdf = os.path.join(input_folder, pdf_file)
         output_file = os.path.join(output_folder, os.path.splitext(pdf_file)[0] + ".xlsx")
-        print(f"\n Processing {input_pdf}")
+        # print(f"\n Processing {input_pdf}")
         try:
             df, account_number, account_holder = process_statement(input_pdf, output_file, bbox_acc_no, bbox_acc_name, poppler_bin)
             print(f"Processed {output_file}, ({len(df)}) rows")
@@ -423,7 +449,7 @@ def combine_excels_if_similar(output_folder, threshold=80):
     """
     excel_files = [f for f in os.listdir(output_folder) if f.lower().endswith('.xlsx')]
     if not excel_files:
-        print("No Excel files found to combine.")
+        # print("No Excel files found to combine.")
         return
 
     groups = []
@@ -444,7 +470,7 @@ def combine_excels_if_similar(output_folder, threshold=80):
 
     for group in groups:
         if len(group) > 1:
-            print(f"Combining files: {group}")
+            # print(f"Combining files: {group}")
             dfs = []
             for fname in group:
                 df = pd.read_excel(os.path.join(output_folder, fname))
@@ -462,13 +488,13 @@ def combine_excels_if_similar(output_folder, threshold=80):
             combined_path = os.path.join(output_folder, f"{prefix}_combined.xlsx")
             combined_df.to_excel(combined_path, index=False)
             print(f"Combined Excel saved to {combined_path}")
-        else:
-            print(f"File {group[0]} has no similar files (>= {threshold}%) to combine. Keeping as is.")
+        # else:
+            # print(f"File {group[0]} has no similar files (>= {threshold}%) to combine. Keeping as is.")
 
 # run locally
 # if __name__ == "__main__":
-#     input_folder = ""
-#     output_folder = ""
+#     input_folder = "data/pdf"
+#     output_folder = "retry"
 #     poppler_bin = None
 
 #     process_folder(input_folder, output_folder, poppler_bin)
