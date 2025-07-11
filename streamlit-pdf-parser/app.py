@@ -1,14 +1,15 @@
 import streamlit as st
+import time
 import os
 import tempfile
 import pandas as pd
-from script import process_statement
+from test import process_statement
 
 st.set_page_config(page_title="PDF Bank Statement Parser", layout="wide")
 st.title("PDF Bank Statement Parser")
 
-poppler_bin = r"D:\Mridul.Intern\poppler-23.05.0\Library\bin"  # Change as needed
-
+poppler_bin = r"D:\Mridul.Intern\poppler-23.05.0\Library\bin"
+  
 def save_uploaded_file(uploadedfile, save_dir):
     file_path = os.path.join(save_dir, uploadedfile.name)
     with open(file_path, "wb") as f:

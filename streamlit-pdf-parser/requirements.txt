@@ -5,4 +5,3 @@ pdf2image
 pytesseract
 fuzzywuzzy
 openpyxl
-streamlit-file-uploader
